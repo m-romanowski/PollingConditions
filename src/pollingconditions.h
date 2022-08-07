@@ -6,17 +6,13 @@
 #include <chrono>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace dev::marcinromanowski {
 
     class PollingConditionsException : public std::exception {
-    private:
-        inline static const std::string REASON_PREFIX = "Condition not satisfied after ";
-        inline static const std::string REASON_SUFFIX = " attempts";
-
     public:
-        explicit PollingConditionsException(int attempts)
-            : reason{REASON_PREFIX + std::to_string(attempts) + REASON_SUFFIX} {
+        explicit PollingConditionsException(std::string reason) : reason{std::move(reason)} {
 
         }
 
@@ -26,6 +22,24 @@ namespace dev::marcinromanowski {
 
     private:
         const std::string reason;
+    };
+
+    template<typename Rep, typename Period>
+    class ConditionNotSatisfied : public PollingConditionsException {
+    public:
+        explicit ConditionNotSatisfied(const std::chrono::duration<Rep, Period> timeout)
+            : PollingConditionsException{"Condition not satisfied after " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(timeout).count()) + "s"} {
+
+        }
+    };
+
+    template<typename Rep, typename Period>
+    class ConditionNotMaintained : public PollingConditionsException {
+    public:
+        explicit ConditionNotMaintained(const std::chrono::duration<Rep, Period> timeout)
+            : PollingConditionsException{"Condition not maintained within " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(timeout).count()) + "s"} {
+
+        }
     };
 
     template<typename Rep, typename Period>
@@ -60,20 +74,31 @@ namespace dev::marcinromanowski {
         }
 
         inline void eventually(const std::function<bool()>& closure) const {
+            if (!isConditionReached(closure)) {
+                throw ConditionNotSatisfied<Rep, Period>(timeout);
+            }
+        }
+
+        inline void constantly(const std::function<bool()>& closure) const {
+            if (isConditionReached([&closure]() -> bool { return !closure(); })) {
+                throw ConditionNotMaintained<Rep, Period>(timeout);
+            }
+        }
+
+    private:
+        bool isConditionReached(const std::function<bool()>& closure) const {
             if (initialDelay.count() > 0) {
                 std::this_thread::sleep_for(initialDelay);
             }
 
-            int attempts = 0;
             std::chrono::milliseconds startTime = getCurrentTimeMs();
             std::chrono::milliseconds currentDelay = std::chrono::duration_cast<std::chrono::milliseconds>(delay);
             std::chrono::milliseconds elapsedTime = std::chrono::milliseconds(0);
 
             while (elapsedTime <= timeout) {
                 try {
-                    attempts++;
                     if (closure()) {
-                        return;
+                        return true;
                     }
                 } catch (const std::exception& ex) {
                     std::cout << "Got unexpected exception, reason: " << ex.what() << std::endl;
@@ -89,10 +114,9 @@ namespace dev::marcinromanowski {
                 currentDelay *= factor;
             }
 
-            throw PollingConditionsException(attempts);
+            return false;
         }
 
-    private:
         [[nodiscard]] inline std::chrono::milliseconds getCurrentTimeMs() const {
             return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
         }
